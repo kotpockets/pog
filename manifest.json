@@ -1,6 +1,6 @@
 {
   "name": "Planogram Scanner",
-  "short_name": "POG Scanner",
+  "short_name": "POG",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#ffffff",
