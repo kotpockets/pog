@@ -63,34 +63,61 @@ let locationCode = "";
 let productCode = "";
 
 async function startScan(type) {
-    currentScan = type;
-    const videoElem = document.getElementById("preview");
+    console.log("StartScan triggered");
 
-    if (!ZXing || !ZXing.BrowserBarcodeReader) {
-        alert("ZXing failed to load");
+    // 🔍 Check camera API availability
+    console.log("navigator.mediaDevices:", navigator.mediaDevices);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert("❌ CAMERA API NOT AVAILABLE.\nBrowser or device is blocking camera access.");
         return;
     }
 
+    // 🔍 Check ZXing loaded
+    console.log("ZXing:", ZXing);
+    if (!ZXing || !ZXing.BrowserBarcodeReader) {
+        alert("❌ ZXing failed to load.");
+        return;
+    }
+
+    currentScan = type;
+    const videoElem = document.getElementById("preview");
+
     const reader = new ZXing.BrowserBarcodeReader();
+
+    console.log("📸 Attempting to start camera…");
+
     try {
-        await reader.decodeFromVideoDevice(null, videoElem, (result, err) => {
-            if (result) {
-                if (currentScan === "location") {
-                    locationCode = result.text;
-                    document.getElementById("locationText").innerText = locationCode;
-                } else {
-                    productCode = result.text.replace(/[^0-9A-Za-z]/g, "");
-                    document.getElementById("productText").innerText = productCode;
-                    drawBarcode(productCode);
-                    addRecord(locationCode, productCode);
+        await reader.decodeFromConstraints(
+            {
+                video: {
+                    facingMode: { ideal: "environment" }  // Force back camera
                 }
-                reader.reset();
+            },
+            videoElem,
+            (result, err) => {
+                if (result) {
+                    console.log("📦 Scan result:", result.text);
+
+                    if (currentScan === "location") {
+                        locationCode = result.text;
+                        document.getElementById("locationText").innerText = locationCode;
+                    } else {
+                        productCode = result.text.replace(/[^0-9A-Za-z]/g, "");
+                        document.getElementById("productText").innerText = productCode;
+                        drawBarcode(productCode);
+                        addRecord(locationCode, productCode);
+                    }
+
+                    reader.reset();
+                }
             }
-        });
+        );
     } catch (e) {
-        alert("Camera Error: " + e);
+        console.error("Camera Error:", e);
+        alert("❌ CAMERA ERROR:\n" + e.message);
     }
 }
+
 
 function drawBarcode(code) {
     if (!code) return;
