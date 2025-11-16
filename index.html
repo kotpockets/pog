@@ -5,7 +5,7 @@
   <title>Planogram Scanner</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <!-- (Optional PWA manifest, safe to leave) -->
+  <!-- Optional PWA manifest -->
   <link rel="manifest" href="manifest.json" />
 
   <style>
@@ -24,14 +24,34 @@
       margin: 6px 0;
       font-size: 16px;
     }
-    #preview, #product-scanner {
+    #preview {
       width: 100%;
       max-height: 280px;
       background: #000;
       margin-top: 10px;
     }
     #product-scanner {
+      width: 100%;
+      max-height: 280px;
+      background: #000;
+      margin-top: 10px;
       position: relative;
+      overflow: hidden;
+    }
+    #product-scanner video,
+    #product-scanner canvas {
+      width: 100%;
+      height: auto;
+    }
+    .aim-box {
+      position: absolute;
+      top: 25%;
+      left: 10%;
+      width: 80%;
+      height: 50%;
+      border: 2px solid #00ff00;
+      box-sizing: border-box;
+      pointer-events: none;
     }
     #output {
       background: #fff;
@@ -51,6 +71,7 @@
       padding: 6px;
       font-size: 14px;
       text-align: left;
+      vertical-align: top;
     }
     .barcode-cell svg {
       width: 100%;
@@ -63,10 +84,10 @@
 
   <h2>Planogram Scanner</h2>
 
-  <!-- Shared video for QR (location) -->
+  <!-- Video for QR location scanning -->
   <video id="preview" playsinline style="display:none;"></video>
 
-  <!-- Container used by Quagga for product barcodes -->
+  <!-- Container for Quagga (product scanning) -->
   <div id="product-scanner" style="display:none;"></div>
 
   <button onclick="startLocationScan()">Scan Location (QR)</button>
@@ -92,28 +113,28 @@
 
   <button onclick="exportCSV()">Export CSV</button>
 
-  <!-- ZXing for QR (location) -->
-  <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.18.6/umd/index.js"></script>
+  <!-- ZXing (for QR location) -->
+  <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.18.6/umd/index.min.js"></script>
 
-  <!-- Quagga2 for UPC / Code128 -->
+  <!-- Quagga2 (for UPC/Code128 products) -->
   <script src="https://cdn.jsdelivr.net/npm/quagga@0.12.1/dist/quagga.min.js"></script>
 
-  <!-- JsBarcode for rendering product barcodes -->
+  <!-- JsBarcode (for drawing barcodes) -->
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 
   <script>
     let locationCode = "";
     let productCode = "";
 
-    // ZXing reader for location QR
-    let zxingReader = null;
+    let zxingReader = null;      // ZXing reader for QR
+    let quaggaRunning = false;   // Quagga state
+    let handlingProduct = false; // lock while handling a detection
 
-    // Quagga state
-    let quaggaRunning = false;
-    let handlingProduct = false; // prevent double triggers
+    let lastProductCode = null;  // for stability (double-pass)
+    let lastProductTime = 0;
 
     /* ----------------------------------------------------
-       Utility: Stop all scanning & camera streams
+       Utility: Stop all scanning
     -----------------------------------------------------*/
     function stopAllScanning() {
       stopLocationScan();
@@ -142,13 +163,15 @@
       container.style.display = "none";
       container.innerHTML = "";
       handlingProduct = false;
+      lastProductCode = null;
+      lastProductTime = 0;
     }
 
     /* ----------------------------------------------------
        LOCATION SCAN (QR via ZXing)
     -----------------------------------------------------*/
     async function startLocationScan() {
-      stopProductScan();
+      stopProductScan(); // no conflicts
 
       const videoElem = document.getElementById("preview");
       videoElem.style.display = "block";
@@ -159,7 +182,11 @@
         return;
       }
 
-      zxingReader = new ZXing.BrowserMultiFormatReader();
+      // ZXing QR-only hints for stability
+      const hints = new Map();
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
+
+      zxingReader = new ZXing.BrowserMultiFormatReader(hints);
 
       try {
         await zxingReader.decodeFromVideoDevice(
@@ -169,7 +196,6 @@
             if (result) {
               locationCode = result.text;
               document.getElementById("locationText").innerText = locationCode;
-              // stop after one scan
               stopLocationScan();
               alert("Location captured. Now scan product.");
             }
@@ -184,13 +210,18 @@
        PRODUCT SCAN (UPC/Code128 via Quagga, continuous)
     -----------------------------------------------------*/
     function startProductScan() {
-      stopLocationScan();  // ensure no conflict
+      stopLocationScan();
 
       const container = document.getElementById("product-scanner");
       const videoElem = document.getElementById("preview");
       videoElem.style.display = "none";
       container.style.display = "block";
-      container.innerHTML = ""; // Quagga will insert its own video
+      container.innerHTML = "";
+
+      // Add aiming box overlay
+      const aim = document.createElement("div");
+      aim.className = "aim-box";
+      container.appendChild(aim);
 
       if (!locationCode) {
         if (!confirm("No location scanned yet. Continue anyway?")) {
@@ -198,11 +229,11 @@
         }
       }
 
-      if (quaggaRunning) {
-        return; // already running
-      }
+      if (quaggaRunning) return;
 
       handlingProduct = false;
+      lastProductCode = null;
+      lastProductTime = 0;
 
       Quagga.init(
         {
@@ -211,13 +242,16 @@
             type: "LiveStream",
             target: container,
             constraints: {
-              facingMode: "environment"
+              facingMode: "environment",
+              width: { ideal: 1920 },
+              height: { ideal: 1080 }
             }
           },
           locator: {
-            patchSize: "medium",
-            halfSample: true
+            patchSize: "x-large",   // better for UPC
+            halfSample: false       // more accurate
           },
+          numOfWorkers: 4,
           decoder: {
             readers: [
               "upc_reader",
@@ -225,9 +259,16 @@
               "ean_reader",
               "code_128_reader",
               "code_39_reader"
-            ]
+            ],
+            debug: {
+              drawBoundingBox: true,
+              showFrequency: false,
+              drawScanline: false,
+              showPattern: false
+            }
           },
-          locate: true
+          locate: true,
+          frequency: 10
         },
         function (err) {
           if (err) {
@@ -237,40 +278,70 @@
           }
           Quagga.start();
           quaggaRunning = true;
+
+          Quagga.offDetected(onProductDetected);
+          Quagga.onDetected(onProductDetected);
         }
       );
-
-      Quagga.offDetected(onProductDetected); // ensure not added twice
-      Quagga.onDetected(onProductDetected);
     }
 
     function onProductDetected(result) {
-      if (handlingProduct) return; // prevent double-handling
-      handlingProduct = true;
+      if (handlingProduct) return;
 
       if (!result || !result.codeResult || !result.codeResult.code) {
-        handlingProduct = false;
         return;
       }
 
       const code = result.codeResult.code;
+      const decoded = result.codeResult.decodedCodes || [];
 
-      // Basic sanity: ignore ultra-short garbage
-      if (code.length < 6) {
-        handlingProduct = false;
+      // Basic validity: length check (UPC or typical Code128 range)
+      if (!(code.length === 12 || (code.length >= 6 && code.length <= 30))) {
         return;
       }
+
+      // Confidence filtering: average error
+      if (decoded.length > 0) {
+        let sumErr = 0;
+        let count = 0;
+        decoded.forEach(c => {
+          if (c && typeof c.error === "number") {
+            sumErr += c.error;
+            count++;
+          }
+        });
+        const avgErr = count ? sumErr / count : 1.0;
+        // Lower avgErr = better; reject high-error reads
+        if (avgErr > 0.15) {
+          return;
+        }
+      }
+
+      const now = Date.now();
+
+      // Double-pass stability: require same code twice in ~1.5s
+      if (code !== lastProductCode) {
+        lastProductCode = code;
+        lastProductTime = now;
+        return; // wait for a second confirming read
+      } else {
+        if (now - lastProductTime > 1500) {
+          // too long between reads, treat as new
+          lastProductCode = code;
+          lastProductTime = now;
+          return;
+        }
+      }
+
+      // If we reach here, we have a stable code
+      handlingProduct = true;
 
       productCode = code;
       document.getElementById("productText").innerText = productCode;
 
-      // Draw the re-scannable product barcode
       drawBarcode(productCode);
-
-      // Add to table (even if location missing, we record)
       addRecord(locationCode || "(none)", productCode);
 
-      // Stop scanning after a successful read
       stopProductScan();
       alert("Product captured.");
     }
@@ -304,7 +375,6 @@
       locCell.innerText = loc;
       upcCell.innerText = upc;
 
-      // Create an SVG barcode inside the cell
       const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
       barcodeCell.classList.add("barcode-cell");
       barcodeCell.appendChild(svg);
