@@ -1,137 +1,42 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8" />
-    <title>Planogram Scanner (PWA)</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Camera Diagnostic</title>
 
-    <!-- PWA -->
-    <link rel="manifest" href="manifest.json">
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <link rel="apple-touch-icon" href="icon-192.png" />
-
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background: #f4f4f4;
-        }
-        video {
-            width: 100%;
-            max-height: 280px;
-            background: #000;
-            margin-bottom: 12px;
-        }
-        button {
-            width: 100%;
-            padding: 12px;
-            margin: 8px 0;
-            font-size: 18px;
-        }
-        #output {
-            background: white;
-            padding: 12px;
-            margin-top: 10px;
-            border-radius: 6px;
-            border: 1px solid #ccc;
-        }
-        table {
-            width: 100%;
-            margin-top: 15px;
-            border-collapse: collapse;
-        }
-        th, td {
-            border: 1px solid #aaa;
-            padding: 8px;
-        }
-    </style>
+<style>
+body { font-family: Arial; padding: 20px; background: #eee; }
+video { width: 100%; background: #000; }
+button { width: 100%; padding: 15px; margin-top: 10px; }
+pre { background: #fff; padding: 10px; border: 1px solid #ccc; }
+</style>
 </head>
 
 <body>
-    <h2>Planogram Scanner (PWA)</h2>
 
-    <video id="preview" playsinline></video>
+<h2>Camera Diagnostic Mode</h2>
 
-    <button onclick="startScan('location')">Scan Location (QR)</button>
-    <button onclick="startScan('product')">Scan Product (UPC / Code128)</button>
-    <button onclick="toggleFlashlight()">Toggle Flashlight</button>
+<video id="cam" playsinline></video>
+<button onclick="start()">Start Camera Test</button>
+<button onclick="testTorch()">Test Torch</button>
 
-    <div id="output">
-        <strong>Location:</strong> <span id="locationText">—</span><br>
-        <strong>Product:</strong> <span id="productText">—</span><br><br>
+<h3>Results</h3>
+<pre id="log">Press “Start Camera Test”</pre>
 
-        <svg id="barcodeCanvas"></svg>
-    </div>
-
-    <h3>Recorded Entries</h3>
-    <table id="recordsTable">
-        <tr><th>Location</th><th>UPC</th></tr>
-    </table>
-
-    <button onclick="exportCSV()">Export CSV</button>
-
-    <!-- ZXing -->
-    <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.18.6/umd/index.js"></script>
-
-    <!-- JsBarcode -->
-    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+<!-- ZXing -->
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.18.6/umd/index.js"></script>
 
 <script>
-let currentTrack = null;
-let currentScan = "";
-let locationCode = "";
-let productCode = "";
+let streamTrack = null;
 
-/* -------------------------------------------------------
-   FLASHLIGHT TOGGLE
---------------------------------------------------------*/
-async function toggleFlashlight() {
-    if (!currentTrack) return alert("Camera not active yet");
-
-    const capabilities = currentTrack.getCapabilities();
-    if (!capabilities.torch) return alert("Torch not supported");
-
-    const settings = currentTrack.getSettings();
-    const torchOn = !settings.torch;
-
-    try {
-        await currentTrack.applyConstraints({ advanced: [{ torch: torchOn }] });
-    } catch (e) {
-        alert("Unable to toggle flashlight: " + e.message);
-    }
+function log(msg) {
+    document.getElementById("log").innerText += "\n" + msg;
+    console.log(msg);
 }
 
-/* -------------------------------------------------------
-   START SCAN
---------------------------------------------------------*/
-async function startScan(type) {
-    currentScan = type;
-    const videoElem = document.getElementById("preview");
-
-    console.log("Navigator:", navigator.mediaDevices);
-    console.log("ZXing:", window.ZXing);
-
-    if (!window.ZXing || !window.ZXing.BrowserMultiFormatReader) {
-        return alert("ZXing library failed to load!");
-    }
-
-    const reader = new ZXing.BrowserMultiFormatReader();
-
-    // Speed up scanning by limiting formats
-    const hints = new Map();
-    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-        ZXing.BarcodeFormat.UPC_A,
-        ZXing.BarcodeFormat.UPC_E,
-        ZXing.BarcodeFormat.EAN_13,
-        ZXing.BarcodeFormat.EAN_8,
-        ZXing.BarcodeFormat.CODE_128,
-        ZXing.BarcodeFormat.CODE_39,
-        ZXing.BarcodeFormat.ITF
-    ]);
-    reader.setHints(hints);
+async function start() {
+    log("=== Starting Camera Test ===");
 
     const constraints = {
         video: {
@@ -143,81 +48,40 @@ async function startScan(type) {
 
     try {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        currentTrack = stream.getVideoTracks()[0];
-        videoElem.srcObject = stream;
-        await videoElem.play();
+        const video = document.getElementById("cam");
+        video.srcObject = stream;
+        streamTrack = stream.getVideoTracks()[0];
+        await video.play();
 
-        const roi = { x: 0.15, y: 0.25, width: 0.70, height: 0.50 };
+        log("Camera started.");
+        log("Track settings: " + JSON.stringify(streamTrack.getSettings(), null, 2));
+        log("Capabilities: " + JSON.stringify(streamTrack.getCapabilities(), null, 2));
 
-        await reader.decodeFromConstraints(
-            constraints,
-            videoElem,
-            (result, err, controls) => {
-                controls.setScanRegion(roi);
-
-                if (result) {
-                    if (currentScan === "location") {
-                        locationCode = result.text;
-                        document.getElementById("locationText").innerText = locationCode;
-                    } else {
-                        productCode = result.text.replace(/[^0-9A-Za-z]/g, "");
-                        document.getElementById("productText").innerText = productCode;
-                        drawBarcode(productCode);
-                        addRecord(locationCode, productCode);
-                    }
-                    reader.reset();
-                }
-
-                if (err && !(err instanceof ZXing.NotFoundException)) {
-                    console.warn("Scan retry:", err);
-                }
-            }
-        );
+        // Test ZXing load
+        log("ZXing loaded: " + !!window.ZXing);
+        if (!window.ZXing) log("ERROR: ZXing not loaded.");
 
     } catch (e) {
-        alert("Camera error: " + e.message);
+        log("ERROR: " + e.message);
     }
 }
 
-/* -------------------------------------------------------
-   BARCODE RENDER
---------------------------------------------------------*/
-function drawBarcode(code) {
-    if (!code) return;
-    JsBarcode("#barcodeCanvas", code, {
-        format: code.length === 12 ? "upc" : "CODE128",
-        height: 100,
-        width: 2,
-        displayValue: true
-    });
-}
+async function testTorch() {
+    if (!streamTrack) return log("Start camera first.");
+    const caps = streamTrack.getCapabilities();
+    log("Torch capability:" + caps.torch);
 
-/* -------------------------------------------------------
-   RECORD TABLE
---------------------------------------------------------*/
-function addRecord(loc, upc) {
-    if (!loc || !upc) return;
-    const table = document.getElementById("recordsTable");
-    const row = table.insertRow();
-    row.insertCell(0).innerText = loc;
-    row.insertCell(1).innerText = upc;
-}
+    if (!caps.torch) {
+        log("Torch NOT supported on this device.");
+        return;
+    }
 
-/* -------------------------------------------------------
-   EXPORT CSV
---------------------------------------------------------*/
-function exportCSV() {
-    let csv = "Location,UPC\n";
-    document.querySelectorAll("#recordsTable tr").forEach((row, i) => {
-        if (i === 0) return;
-        const cols = row.querySelectorAll("td");
-        csv += `${cols[0].innerText},${cols[1].innerText}\n`;
-    });
-    const blob = new Blob([csv], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "planogram.csv";
-    a.click();
+    log("Toggling torch...");
+    await streamTrack.applyConstraints({ advanced: [{ torch: true }] });
+    setTimeout(() => {
+        streamTrack.applyConstraints({ advanced: [{ torch: false }] });
+        log("Torch off.");
+    }, 1500);
 }
 </script>
 
