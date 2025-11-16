@@ -1,87 +1,191 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Camera Diagnostic</title>
+<title>Planogram Scanner</title>
+
+<link rel="manifest" href="manifest.json">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 
 <style>
-body { font-family: Arial; padding: 20px; background: #eee; }
-video { width: 100%; background: #000; }
-button { width: 100%; padding: 15px; margin-top: 10px; }
-pre { background: #fff; padding: 10px; border: 1px solid #ccc; }
+    body { font-family: Arial; padding: 20px; background: #f4f4f4; }
+    video { width: 100%; background: #000; }
+    canvas { display: none; }
+    button { width: 100%; padding: 14px; font-size: 18px; margin-top: 10px; }
+    #output {
+        background:white; padding:10px; margin-top:15px; 
+        border-radius:8px; border:1px solid #ccc;
+    }
+    table { width:100%; margin-top:15px; border-collapse:collapse; }
+    th, td { border:1px solid #aaa; padding:8px; }
 </style>
-</head>
 
+</head>
 <body>
 
-<h2>Camera Diagnostic Mode</h2>
+<h2>Planogram Scanner</h2>
 
-<video id="cam" playsinline></video>
-<button onclick="start()">Start Camera Test</button>
-<button onclick="testTorch()">Test Torch</button>
+<video id="camera" playsinline></video>
+<canvas id="snapshot"></canvas>
 
-<h3>Results</h3>
-<pre id="log">Press “Start Camera Test”</pre>
+<button onclick="startCamera()">Start Camera</button>
+<button onclick="captureBarcode()">Capture Barcode</button>
+<button onclick="toggleTorch()">Toggle Flashlight</button>
 
-<!-- ZXing -->
-<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.18.6/umd/index.js"></script>
+<h3>Location & Product</h3>
+<div id="output">
+    <strong>Location:</strong> <span id="locationText">—</span><br>
+    <strong>Product:</strong> <span id="productText">—</span><br><br>
+    <svg id="barcodeCanvas"></svg>
+</div>
+
+<h3>Records</h3>
+<table id="recordsTable">
+<tr><th>Location</th><th>UPC</th></tr>
+</table>
+
+<button onclick="exportCSV()">Export CSV</button>
+
+<!-- Quagga2 -->
+<script src="https://cdn.jsdelivr.net/npm/quagga@0.12.1/dist/quagga.min.js"></script>
+
+<!-- JsBarcode -->
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 
 <script>
-let streamTrack = null;
+let stream;
+let track;
+let locationCode = "";
+let productCode = "";
+let currentScan = "location"; // first scan is location
 
-function log(msg) {
-    document.getElementById("log").innerText += "\n" + msg;
-    console.log(msg);
-}
+/* -------------------------------------------------------
+   START CAMERA (Single-Shot Mode)
+--------------------------------------------------------*/
+async function startCamera() {
+    const video = document.getElementById("camera");
 
-async function start() {
-    log("=== Starting Camera Test ===");
-
-    const constraints = {
+    stream = await navigator.mediaDevices.getUserMedia({
         video: {
-            facingMode: { ideal: "environment" },
+            facingMode: "environment",
             width: { ideal: 1920 },
             height: { ideal: 1080 }
         }
-    };
+    });
+
+    track = stream.getVideoTracks()[0];
+    video.srcObject = stream;
+    await video.play();
+}
+
+/* -------------------------------------------------------
+   SNAPSHOT + QUAGGA DECODE
+--------------------------------------------------------*/
+async function captureBarcode() {
+    const video = document.getElementById("camera");
+    const canvas = document.getElementById("snapshot");
+    const ctx = canvas.getContext("2d");
+
+    // Size canvas to video frame
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    // "Freeze" the frame
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Quagga decode
+    Quagga.decodeSingle({
+        decoder: {
+            readers: [
+                "upc_reader",
+                "upc_e_reader",
+                "ean_reader",
+                "code_128_reader",
+                "code_39_reader",
+                "i2of5_reader"
+            ]
+        },
+        locate: true,
+        src: canvas.toDataURL()
+    }, function(result) {
+        if (result && result.codeResult) {
+            const code = result.codeResult.code;
+            
+            if (currentScan === "location") {
+                locationCode = code;
+                document.getElementById("locationText").innerText = code;
+                currentScan = "product";
+                alert("Location captured! Now scan product.");
+            } else {
+                productCode = code;
+                document.getElementById("productText").innerText = code;
+                drawBarcode(code);
+                addRecord(locationCode, code);
+                currentScan = "location";
+                alert("Product captured! Ready for next location.");
+            }
+        } else {
+            alert("No barcode detected. Try again.");
+        }
+    });
+}
+
+/* -------------------------------------------------------
+   TORCH (Flashlight)
+--------------------------------------------------------*/
+async function toggleTorch() {
+    if (!track) return alert("Camera not running");
+    const capabilities = track.getCapabilities();
+
+    if (!capabilities.torch) {
+        return alert("Torch not supported on this device.");
+    }
+
+    const settings = track.getSettings();
+    const torchOn = !settings.torch;
 
     try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        const video = document.getElementById("cam");
-        video.srcObject = stream;
-        streamTrack = stream.getVideoTracks()[0];
-        await video.play();
-
-        log("Camera started.");
-        log("Track settings: " + JSON.stringify(streamTrack.getSettings(), null, 2));
-        log("Capabilities: " + JSON.stringify(streamTrack.getCapabilities(), null, 2));
-
-        // Test ZXing load
-        log("ZXing loaded: " + !!window.ZXing);
-        if (!window.ZXing) log("ERROR: ZXing not loaded.");
-
+        await track.applyConstraints({ advanced: [{ torch: torchOn }] });
     } catch (e) {
-        log("ERROR: " + e.message);
+        alert("Torch toggle failed: " + e.message);
     }
 }
 
-async function testTorch() {
-    if (!streamTrack) return log("Start camera first.");
-    const caps = streamTrack.getCapabilities();
-    log("Torch capability:" + caps.torch);
+/* -------------------------------------------------------
+   RENDER BARCODE
+--------------------------------------------------------*/
+function drawBarcode(code) {
+    JsBarcode("#barcodeCanvas", code, {
+        format: code.length === 12 ? "upc" : "CODE128",
+        height: 100,
+        displayValue: true
+    });
+}
 
-    if (!caps.torch) {
-        log("Torch NOT supported on this device.");
-        return;
-    }
+/* -------------------------------------------------------
+   RECORDS
+--------------------------------------------------------*/
+function addRecord(loc, upc) {
+    const table = document.getElementById("recordsTable");
+    const row = table.insertRow();
+    row.insertCell(0).innerText = loc;
+    row.insertCell(1).innerText = upc;
+}
 
-    log("Toggling torch...");
-    await streamTrack.applyConstraints({ advanced: [{ torch: true }] });
-    setTimeout(() => {
-        streamTrack.applyConstraints({ advanced: [{ torch: false }] });
-        log("Torch off.");
-    }, 1500);
+function exportCSV() {
+    let csv = "Location,UPC\n";
+    document.querySelectorAll("#recordsTable tr").forEach((row, i) => {
+        if (i === 0) return;
+        const cols = row.querySelectorAll("td");
+        csv += `${cols[0].innerText},${cols[1].innerText}\n`;
+    });
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "planogram.csv";
+    a.click();
 }
 </script>
 
